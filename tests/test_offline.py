@@ -12,6 +12,14 @@
 import sys
 from pathlib import Path
 
+# Windows 控制台/CI 默认是 cp1252 或 gbk，直接 print 中文会 UnicodeEncodeError。
+# 这里强制把标准输出改成 UTF-8，保证本地和 CI 行为一致。
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except (AttributeError, OSError):
+    pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.tools import clean_fulltext

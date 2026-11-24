@@ -17,7 +17,8 @@ class Finding:
     """一条带来源的研究发现。"""
     claim: str          # 结论，如"灵隐寺秋季人流大，建议早到"
     source: str = ""    # 来源 URL 或出处
-    confidence: float = 1.0  # 置信度，离线资料 1.0
+    confidence: float = 1.0  # 置信度
+    level: str = ""     # 来源权威等级 S/A/B/C/D（见 core/authority.py）
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -30,11 +31,12 @@ class KnowledgePack:
     findings: List[Finding] = field(default_factory=list)
     preferences: Dict[str, Any] = field(default_factory=dict)
 
-    def add(self, claim: str, source: str = "", confidence: float = 1.0):
+    def add(self, claim: str, source: str = "", confidence: float = 1.0,
+            level: str = ""):
         """新增一条发现，自动跳过空结论（脏数据防御）。"""
         claim = (claim or "").strip()
         if claim:
-            self.findings.append(Finding(claim, source, confidence))
+            self.findings.append(Finding(claim, source, confidence, level))
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -48,11 +50,23 @@ class KnowledgePack:
         lines = [f"调研主题：{self.topic}", "", "调研发现（每条都带来源）："]
         for i, f in enumerate(self.findings, 1):
             src = f" [来源: {f.source}]" if f.source else ""
-            lines.append(f"[{i}] {f.claim}{src}")
+            lv = f"（{f.level}级来源）" if f.level else ""
+            lines.append(f"[{i}] {f.claim}{lv}{src}")
         if self.preferences:
             lines.append("")
             lines.append(f"用户偏好：{self.preferences}")
         return "\n".join(lines)
+
+    @property
+    def stats(self) -> Dict[str, Any]:
+        """来源质量统计，供前端展示。"""
+        from collections import Counter
+        levels = [f.level for f in self.findings if f.level]
+        return {
+            "total": len(self.findings),
+            "by_level": dict(Counter(levels)),
+            "has_source": sum(1 for f in self.findings if f.source),
+        }
 
 
 @dataclass

@@ -56,12 +56,16 @@ jobs:
           import sys, importlib
           sys.path.insert(0, '.')
           mods = ['core.config','core.llm','core.tools','core.evidence',
-                  'core.domain','core.amap','core.photos',
+                  'core.domain','core.amap','core.photos','core.authority','core.policy',
                   'agents.researcher','agents.planner','pipeline']
           for m in mods:
               importlib.import_module(m)
               print('ok', m)
           "
+
+      - name: 检查评测集格式
+        # 评测集是人工维护的，格式错了会让评测悄悄失效（永远判定通过）
+        run: python tests/check_eval_set.py
 
   secret-scan:
     name: 密钥泄露检查

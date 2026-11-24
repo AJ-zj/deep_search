@@ -25,6 +25,7 @@ class TripResearchPipeline:
     def __init__(self, llm: LLM, search: SearchTool,
                  event_sink: Optional[Callable[[Dict[str, Any]], None]] = None,
                  amap=None, photos=None):
+        self._llm = llm
         self.researcher = ResearchEngine(llm, search, event_sink=event_sink)
         self.planner = PlanEngine(llm, amap=amap, photos=photos)
         self._sink = event_sink
@@ -37,8 +38,8 @@ class TripResearchPipeline:
                 logger.warning(f"事件回调异常（不影响主流程）: {e}")
 
     def run(self, topic: str, preferences: dict = None,
-            domain: str = "", deep: bool = False) -> tuple[KnowledgePack, TravelPlan]:
-        """执行完整流程，返回 (知识包, 行程)。
+            domain: str = "", deep: bool = False):
+        """执行完整流程，返回 (知识包, 行程, 政策卡片)。
 
         Args:
             domain: 调研领域（travel/policy/ecommerce/general），默认按旅行。
@@ -57,6 +58,7 @@ class TripResearchPipeline:
 
         # ---- 阶段 2：决策（只有旅行领域才排行程）----
         plan = TravelPlan(topic=topic)
+        card = None
         if domain in ("", "travel"):
             self._emit({"type": "stage", "stage": "plan",
                         "message": "正在生成行程..."})
@@ -65,5 +67,13 @@ class TripResearchPipeline:
                         "days": len(plan.days),
                         "places": len(plan.all_places()),
                         "message": f"行程生成完成，共 {len(plan.days)} 天 {len(plan.all_places())} 个地点"})
+        elif domain == "policy":
+            # 政策领域：把发现整理成结构化卡片（文号/主体/补贴/期限）
+            self._emit({"type": "stage", "stage": "plan",
+                        "message": "正在整理政策要点..."})
+            from core.policy import build_card
+            card = build_card(pack, llm=self._llm)
+            self._emit({"type": "policy_card", "card": card.to_dict(),
+                        "message": f"已抽取 {card.filled}/6 个关键字段"})
 
-        return pack, plan
+        return pack, plan, card

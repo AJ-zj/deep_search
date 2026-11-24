@@ -1,0 +1,53 @@
+{
+  "_comment": "政策调研评测集。expected 是人工核实的标准答案（以政府公开文件为准）。used_for 标记该主题检验什么能力。",
+  "version": 1,
+  "cases": [
+    {
+      "id": "zj-pv-subsidy",
+      "topic": "浙江省分布式光伏发电补贴政策",
+      "domain": "policy",
+      "used_for": "补贴金额准确性（最核心）",
+      "expected": {
+        "doc_no_contains": [],
+        "issuer_contains": ["浙江"],
+        "subsidy_values": ["0.1", "0.2", "0.3", "0.42", "0.10", "0.18"],
+        "subsidy_must_hit": 2,
+        "scope_keywords": ["分布式"],
+        "must_not_contain": ["江苏", "广东", "山东"]
+      }
+    },
+    {
+      "id": "national-pv-policy",
+      "topic": "国家分布式光伏发电补贴政策文件",
+      "domain": "policy",
+      "used_for": "文号识别能力",
+      "expected": {
+        "doc_no_contains": ["财建", "国能", "发改", "国发"],
+        "issuer_contains": ["国家", "能源局", "发展改革委", "财政部"],
+        "subsidy_values": ["0.42", "0.10", "0.18"],
+        "subsidy_must_hit": 1,
+        "scope_keywords": ["分布式"],
+        "must_not_contain": []
+      }
+    },
+    {
+      "id": "zhejiang-renewable-fund",
+      "topic": "浙江省可再生能源发展专项资金管理办法",
+      "domain": "policy",
+      "used_for": "政策名称与主体识别",
+      "expected": {
+        "doc_no_contains": ["浙"],
+        "issuer_contains": ["浙江"],
+        "subsidy_values": [],
+        "subsidy_must_hit": 0,
+        "scope_keywords": ["可再生能源"],
+        "must_not_contain": ["江苏", "安徽"]
+      }
+    }
+  ],
+  "source_quality": {
+    "_comment": "每次评测都检查：S/A 级来源占比应达标，D 级不应出现",
+    "min_authoritative_ratio": 0.5,
+    "max_low_quality": 0
+  }
+}

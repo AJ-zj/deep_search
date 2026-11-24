@@ -78,13 +78,14 @@ def _worker(req: PlanRequest, q: queue.Queue):
                               cache_dir=_ROOT / "workspace")
         pipe = TripResearchPipeline(llm, search, event_sink=lambda e: q.put(e),
                                     amap=amap, photos=photos)
-        pack, plan = pipe.run(req.topic, {
+        pack, plan, card = pipe.run(req.topic, {
             "days": req.days, "interests": req.interests,
         }, domain=req.domain, deep=req.deep)
         q.put({"type": "report",
                "data": plan.to_markdown(pack),
                "plan": plan.to_dict(),
                "pack": pack.to_dict(),
+               "card": card.to_dict() if card else None,
                "domain": req.domain})
     except Exception as e:
         logger.exception("流水线失败")
@@ -126,7 +127,10 @@ async def _stream(req: PlanRequest) -> AsyncGenerator[str, None]:
             elif t == "report":
                 yield _sse({"type": "report", "data": event.get("data", ""),
                             "plan": event.get("plan", {}), "pack": event.get("pack", {}),
-                            "domain": event.get("domain", "")})
+                            "card": event.get("card"), "domain": event.get("domain", "")})
+            elif t == "policy_card":
+                yield _sse({"type": "policy_card", "card": event.get("card", {}),
+                            "text": event.get("message", "")})
             elif t == "error":
                 yield _sse({"type": "error", "message": event.get("message", "")})
         yield _sse({"type": "progress", "percentage": 100, "text": "完成"})

@@ -73,13 +73,13 @@ class ResearchEngine:
 
         keywords = self._topic_keywords(topic, dom)
         scope = keywords[0] if (keywords and dom.scope_by_place) else ""
-        all_findings: List[Tuple[str, str]] = []
+        all_findings: List[Tuple[str, str, str]] = []   # (结论, 来源, 等级)
 
         # ② 第一轮：逐问题搜索 + 提炼
         for i, q in enumerate(questions, 1):
             self._emit({"type": "progress",
                         "text": f"正在调研 {i}/{len(questions)}：{q[:24]}"})
-            all_findings.extend(self._research_one(q, scope, dom, deep))
+            all_findings.extend(self._research_one(q, scope, dom, deep, topic))
 
         # ③ 迭代深挖：找出证据缺口，追问补搜
         if deep and all_findings:
@@ -89,15 +89,15 @@ class ResearchEngine:
                 logger.info(f"发现 {len(gaps)} 个证据缺口，进入第二轮: {gaps}")
                 self._emit({"type": "progress", "text": f"发现 {len(gaps)} 处证据缺口，深挖中..."})
                 for g in gaps[:2]:
-                    all_findings.extend(self._research_one(g, scope, dom, deep))
+                    all_findings.extend(self._research_one(g, scope, dom, deep, topic))
 
         # ④ 过滤 + 去重（同一结论只保留一条）
-        kept = [(c, s) for c, s in all_findings
+        kept = [(c, s, lv) for c, s, lv in all_findings
                 if not keywords or any(k in c for k in keywords)]
         if len(kept) < 2:
             kept = all_findings
         seen = set()
-        for claim, source in kept:
+        for claim, source, level in kept:
             # 丢弃"网络不可用"这类无信息量的占位结论（离线降级时模型会生成）
             if _USELESS_PATTERNS.search(claim):
                 logger.warning(f"丢弃无信息量结论: {claim[:40]}")
@@ -106,17 +106,32 @@ class ResearchEngine:
             if key in seen:
                 continue
             seen.add(key)
-            pack.add(claim, source)
+            # 权威等级高的发现，置信度也高（供下游排序参考）
+            conf = {"S": 1.0, "A": 0.9, "B": 0.75, "C": 0.6}.get(level, 0.5)
+            pack.add(claim, source, confidence=conf, level=level)
+
+        # 按权威等级排序：S 级在前，让最可信的证据优先呈现
+        order = {"S": 0, "A": 1, "B": 2, "C": 3, "D": 4, "": 5}
+        pack.findings.sort(key=lambda f: (order.get(f.level, 5), -f.confidence))
 
         return pack
 
     def _research_one(self, question: str, scope: str, dom: Domain,
-                      deep: bool) -> List[Tuple[str, str]]:
-        """单个问题的调研：搜索 → 提炼 → 绑定来源。"""
+                      deep: bool, topic: str = '') -> List[Tuple[str, str, str]]:
+        """单个问题的调研：搜索 → 按权威性排序 → 提炼 → 绑定来源。"""
         scoped_q = f"{scope} {question}" if scope and scope not in question else question
-        results = self.search.search(scoped_q, max_results=3)
+        results = self.search.search(scoped_q, max_results=5)
         if not results:
             return []
+
+        # 按来源权威性排序：政府/官方优先，低质（营销号/问答站）剔除。
+        # 这是政策调研的关键——不能把营销号和红头文件等权处理。
+        from core.authority import rank
+        results = rank(results)
+        if not results:
+            logger.warning(f"搜索结果全部为低质来源，跳过：{question[:30]}")
+            return []
+        results = results[:3]        # 只把最权威的 3 条喂给模型
 
         # 组装喂给模型的材料。deep 模式优先用整页正文，
         # 但正文可能为空（抓取失败/离线降级），此时必须回退到摘要，
@@ -136,18 +151,20 @@ class ResearchEngine:
             return []
         material = "\n\n".join(blocks)
 
-        findings = self._extract(question, material, len(results), dom)
+        findings = self._extract(question, material, len(results), dom, topic)
         out = []
         for claim, idx in findings:
             # 按模型标注的编号取来源，而非一律用第一条（防错误归因）
-            source = results[idx - 1].get("url", "") if idx else ""
-            out.append((claim, source))
+            hit = results[idx - 1] if idx else {}
+            source = hit.get("url", "")
+            level = hit.get("level", "")
+            out.append((claim, source, level))
         return out
 
-    def _find_gaps(self, topic: str, findings: List[Tuple[str, str]],
+    def _find_gaps(self, topic: str, findings: List[Tuple[str, str, str]],
                    dom: Domain) -> List[str]:
         """让 LLM 判断还缺什么，生成追问。没有缺口就返回空列表。"""
-        existing = "\n".join(f"- {c}" for c, _ in findings[:10])
+        existing = "\n".join(f"- {c}" for c, _, _ in findings[:10])
         prompt = (
             f"研究主题：{topic}\n已获得的发现：\n{existing}\n\n"
             f"请判断要交付一份可靠的研究结论，还缺哪些关键信息"
@@ -239,7 +256,7 @@ class ResearchEngine:
         return lines or [topic]
 
     def _extract(self, question: str, material: str, n_results: int,
-                 dom: Domain) -> List[Tuple[str, int]]:
+                 dom: Domain, topic: str = "") -> List[Tuple[str, int]]:
         """从资料提炼最多 3 条结论，返回 [(结论, 来源编号)]。
 
         两段式：先严格提炼（允许判定"无关"），失败则放宽再试一次。
@@ -247,24 +264,39 @@ class ResearchEngine:
             实测严格模式下，模型会因为"资料没精确回答这个具体问题"
             而输出"无关"，导致整轮调研 0 条结果。但资料本身是相关的
             （如问文号，资料给了补贴标准），不该整条丢弃。
+
+        topic 用于约束提炼范围：深度档读了整页正文，正文里常混有
+        与主题无关的其他政策（实测把《政务公开工作意见》当成了光伏政策），
+        所以提炼时要把主题带上，明确要求只输出与该主题相关的结论。
         """
         if not material:
             return []
 
-        strict = self._extract_once(question, material, n_results, dom, strict=True)
+        strict = self._extract_once(question, material, n_results, dom,
+                                    strict=True, topic=topic)
         if strict:
             return strict
         logger.info(f"严格提炼无结果，放宽重试：{question[:30]}")
-        return self._extract_once(question, material, n_results, dom, strict=False)
+        return self._extract_once(question, material, n_results, dom,
+                                  strict=False, topic=topic)
 
     def _extract_once(self, question: str, material: str, n_results: int,
-                      dom: Domain, strict: bool) -> List[Tuple[str, int]]:
+                      dom: Domain, strict: bool,
+                      topic: str = "") -> List[Tuple[str, int]]:
         hint = f"。{dom.extract_hint}" if dom.extract_hint else ""
+        # 主题约束（关键）：明确告知整体研究主题，避免从长正文里提炼出
+        # 主题之外的其他政策内容（语义漂移）。
+        topic_guard = (
+            f"整体研究主题是「{topic}」。只输出与这个主题相关的结论；"
+            f"如果资料讲的是别的话题（例如讲政务公开而非{topic}），不要提炼。"
+        ) if topic else ""
+
         if strict:
             system_prompt = (
                 "你是研究助手。仔细阅读资料，输出结论，每条一行，格式为：结论内容||来源编号。"
                 "来源编号是该结论依据的资料序号（如 1、2、3）。"
-                "只依据资料、不要编造；如果资料与问题主题完全无关，直接输出“无关”" + hint
+                "只依据资料、不要编造；如果资料与问题主题完全无关，直接输出“无关”"
+                + topic_guard + hint
             )
             ask = "提炼最多 3 条关键结论（格式：结论||编号）："
         else:
@@ -272,10 +304,10 @@ class ResearchEngine:
             system_prompt = (
                 "你是研究助手。资料可能与问题不完全对应，但只要能提取到相关的"
                 "事实、数字、规定或背景，就要提炼出来。输出结论，每条一行，"
-                "格式为：结论内容||来源编号。来源编号是资料序号。" + hint
+                "格式为：结论内容||来源编号。来源编号是资料序号。"
+                + topic_guard + hint
             )
             ask = "尽量提炼最多 3 条与主题相关的事实或结论（格式：结论||编号）："
-
         resp = self.llm.invoke([
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"问题：{question}\n资料：\n{material}\n\n{ask}"},

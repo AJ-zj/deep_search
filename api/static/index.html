@@ -234,23 +234,68 @@ function renderMd(md) {
   closeUl(); return out.join('\n');
 }
 
-function renderFindings(pack, domain) {
+function renderCard(card) {
+  // 政策卡片：把调研发现整理成结构化要点
+  if (!card) return '';
+  const rows = [
+    ['政策名称', card.title],
+    ['文号', card.doc_no],
+    ['发布主体', card.issuer],
+    ['有效期', card.effective],
+    ['适用对象', card.scope],
+  ];
+  let html = '<div class="day-card" style="margin-bottom:14px">'
+    + '<div class="day-title"><span class="badge">政策卡片</span>结构化要点</div>';
+  rows.forEach(([k, v]) => {
+    if (v) html += `<div style="display:flex;gap:10px;padding:5px 0;font-size:13.5px">
+      <span style="color:#94a3b8;flex:none;width:72px">${k}</span>
+      <span style="color:#0f172a">${esc(v)}</span></div>`;
+  });
+  if (card.subsidy && card.subsidy.length) {
+    html += `<div style="display:flex;gap:10px;padding:5px 0;font-size:13.5px">
+      <span style="color:#94a3b8;flex:none;width:72px">补贴标准</span>
+      <div>${card.subsidy.map(s => `<div style="color:#0f172a">${esc(s)}</div>`).join('')}</div></div>`;
+  }
+  if (card.key_points && card.key_points.length) {
+    html += `<div style="display:flex;gap:10px;padding:5px 0;font-size:13.5px">
+      <span style="color:#94a3b8;flex:none;width:72px">其他要点</span>
+      <div>${card.key_points.slice(0,5).map(s => `<div style="color:#475569">· ${esc(s)}</div>`).join('')}</div></div>`;
+  }
+  html += '</div>';
+  return html;
+}
+
+const LEVEL_COLOR = { S: '#059669', A: '#0891b2', B: '#d97706', C: '#94a3b8', D: '#dc2626' };
+
+function renderFindings(pack, domain, card) {
   // 非旅行领域：没有行程/地图，直接展示"带来源的调研发现"
   const box = $('plans'); box.innerHTML = '';
   const findings = (pack && pack.findings) || [];
-  const card = document.createElement('div');
-  card.className = 'day-card';
+
+  // 顶部：政策卡片（若有）
+  if (card) box.innerHTML += renderCard(card);
+
+  const c = document.createElement('div');
+  c.className = 'day-card';
+  const st = pack.stats || {};
+  const byLv = st.by_level || {};
+  let lvHtml = Object.keys(byLv).sort()
+    .map(k => `<span style="color:${LEVEL_COLOR[k] || '#94a3b8'};margin-left:8px">${k}级 ${byLv[k]}条</span>`)
+    .join('');
   let html = `<div class="day-title"><span class="badge">调研</span>${esc(pack.topic || '')}</div>`;
-  html += `<div style="font-size:13px;color:#64748b;margin-bottom:12px">
-             共 ${findings.length} 条带来源的发现</div>`;
+  html += `<div style="font-size:13px;color:#64748b;margin-bottom:10px">
+             共 ${findings.length} 条带来源的发现${lvHtml}</div>`;
   findings.forEach((f, i) => {
+    const lv = f.level || '';
+    const badge = lv ? `<span style="font-size:11px;color:${LEVEL_COLOR[lv] || '#94a3b8'};
+      border:1px solid ${LEVEL_COLOR[lv] || '#94a3b8'};border-radius:5px;padding:0 5px;margin-left:6px">${lv}</span>` : '';
     html += `<div class="place"><div class="pi" style="width:100%">
-      <div class="pn"><span class="task-id" style="margin-right:6px">${i + 1}</span>${esc(f.claim)}</div>
+      <div class="pn"><span style="color:#94a3b8;margin-right:6px">${i + 1}</span>${esc(f.claim)}${badge}</div>
       ${f.source ? `<div class="pa">🔗 <a href="${esc(f.source)}" target="_blank" rel="noopener">${esc(f.source)}</a></div>` : ''}
     </div></div>`;
   });
-  card.innerHTML = html;
-  box.appendChild(card);
+  c.innerHTML = html;
+  box.appendChild(c);
 }
 
 function renderWeather(plan) {
@@ -395,7 +440,7 @@ async function start() {
             $('mapbox').style.display = 'none';
             $('weather').style.display = 'none';
             $('main').classList.add('single');
-            renderFindings(data.pack || {}, dom);
+            renderFindings(data.pack || {}, dom, data.card);
           }          // Markdown 原文默认折叠，按需展开
           $('md').innerHTML = renderMd(data.data || '');
           $('reportMd').style.display = 'none';

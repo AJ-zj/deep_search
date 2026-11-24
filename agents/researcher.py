@@ -28,6 +28,15 @@ from core.domain import Domain, get_domain
 
 logger = logging.getLogger(__name__)
 
+# 无信息量的占位结论（离线降级时模型容易生成这类内容）
+_USELESS_PATTERNS = re.compile(
+    r"网络(搜索|环境)?(不可用|无法|不支持|受限)"
+    r"|无法(获取|查询|检索|找到)"
+    r"|没有(找到|获取到)相关"
+    r"|建议联网"
+    r"|离线资料"
+)
+
 
 class ResearchEngine:
     def __init__(self, llm: LLM, search: SearchTool,
@@ -89,6 +98,10 @@ class ResearchEngine:
             kept = all_findings
         seen = set()
         for claim, source in kept:
+            # 丢弃"网络不可用"这类无信息量的占位结论（离线降级时模型会生成）
+            if _USELESS_PATTERNS.search(claim):
+                logger.warning(f"丢弃无信息量结论: {claim[:40]}")
+                continue
             key = claim[:30]        # 用前缀去重，避免同一结论重复入库
             if key in seen:
                 continue
@@ -105,14 +118,23 @@ class ResearchEngine:
         if not results:
             return []
 
-        # deep 模式用整页正文，普通模式用摘要
-        if deep and any(r.get("fulltext") for r in results):
-            prompts = [f"[{i}] {r.get('title','')}\n正文：\n{r.get('fulltext','')}"
-                       for i, r in enumerate(results, 1)]
-        else:
-            prompts = [f"[{i}] {r.get('title','')}: {r.get('snippet','')}"
-                       for i, r in enumerate(results, 1)]
-        material = "\n\n".join(prompts)
+        # 组装喂给模型的材料。deep 模式优先用整页正文，
+        # 但正文可能为空（抓取失败/离线降级），此时必须回退到摘要，
+        # 否则模型会拿到空材料、凭空编造"网络不可用"之类的内容。
+        blocks = []
+        for i, r in enumerate(results, 1):
+            body = ""
+            if deep:
+                body = (r.get("fulltext") or "").strip()
+            if not body:
+                body = (r.get("snippet") or "").strip()
+            if not body:
+                continue
+            blocks.append(f"[{i}] {r.get('title','')}\n{body}")
+        if not blocks:
+            logger.warning(f"搜索结果无有效正文，跳过：{question[:30]}")
+            return []
+        material = "\n\n".join(blocks)
 
         findings = self._extract(question, material, len(results), dom)
         out = []
@@ -149,10 +171,56 @@ class ResearchEngine:
 
     @staticmethod
     def _topic_keywords(topic: str, dom: Domain) -> List[str]:
-        """从主题提取有区分度的关键词（按领域停用词过滤）。"""
-        words = re.findall(r"[\u4e00-\u9fa5]{2,}|[A-Za-z]{3,}", topic)
-        stop = set(dom.stop_words)
-        return [w for w in words if w not in stop]
+        """从主题提取有区分度的关键词（按领域停用词过滤）。
+
+        为什么不能直接用 re.findall(r'[\\u4e00-\\u9fa5]{2,}')？
+            它会贪婪吞掉整句（"浙江省分布式光伏补贴政策" 变一个词），
+            导致关键词比主题还长，过滤时永远匹配不上。
+        做法：先按停用词切分，再从切出的片段里取前 2-4 字作为关键词。
+        """
+        stop = sorted(dom.stop_words, key=len, reverse=True)
+
+        # 用领域停用词作为分隔符，把长句切成短片段
+        pattern = "|".join(re.escape(w) for w in stop) if stop else None
+        segments = re.split(pattern, topic) if pattern else [topic]
+
+        keywords: List[str] = []
+        for seg in segments:
+            seg = seg.strip()
+            seg = re.sub(r"[\d\s\W_]+", "", seg)     # 去数字、标点
+            if len(seg) < 2:
+                continue
+            # 片段可能偏长（如"浙江省分布式光伏"），提取行政区/主体前缀
+            keywords.extend(ResearchEngine._split_subject(seg))
+
+        # 英文词单独提取
+        keywords.extend(re.findall(r"[A-Za-z]{3,}", topic))
+        # 去重且保持顺序
+        seen, out = set(), []
+        for k in keywords:
+            if k and k not in seen:
+                seen.add(k)
+                out.append(k)
+        return out
+
+    # 常见行政区/主体后缀（用于切出"浙江省""杭州市"这类核心主体）
+    _GEO_RE = re.compile(
+        r"^(.{2,3}?(?:省|市|县|区|州|自治区|特别行政区))"
+    )
+
+    @staticmethod
+    def _split_subject(seg: str) -> List[str]:
+        """从长片段里切出核心主体。"""
+        out = []
+        m = ResearchEngine._GEO_RE.match(seg)
+        if m:
+            out.append(m.group(1))          # 如"浙江省"
+            rest = seg[m.end():]
+            if len(rest) >= 2:
+                out.append(rest[:6])        # 剩余部分取前 6 字作领域词
+        else:
+            out.append(seg[:6])
+        return out
 
     def _decompose(self, topic: str, prefs: dict, dom: Domain) -> List[str]:
         """LLM 按领域维度拆成 3 个子问题；解析失败兜底用主题本身。"""
@@ -172,19 +240,45 @@ class ResearchEngine:
 
     def _extract(self, question: str, material: str, n_results: int,
                  dom: Domain) -> List[Tuple[str, int]]:
-        """从资料提炼最多 3 条结论，返回 [(结论, 来源编号)]。"""
+        """从资料提炼最多 3 条结论，返回 [(结论, 来源编号)]。
+
+        两段式：先严格提炼（允许判定"无关"），失败则放宽再试一次。
+        为什么需要放宽？
+            实测严格模式下，模型会因为"资料没精确回答这个具体问题"
+            而输出"无关"，导致整轮调研 0 条结果。但资料本身是相关的
+            （如问文号，资料给了补贴标准），不该整条丢弃。
+        """
         if not material:
             return []
+
+        strict = self._extract_once(question, material, n_results, dom, strict=True)
+        if strict:
+            return strict
+        logger.info(f"严格提炼无结果，放宽重试：{question[:30]}")
+        return self._extract_once(question, material, n_results, dom, strict=False)
+
+    def _extract_once(self, question: str, material: str, n_results: int,
+                      dom: Domain, strict: bool) -> List[Tuple[str, int]]:
         hint = f"。{dom.extract_hint}" if dom.extract_hint else ""
-        system_prompt = (
-            "你是研究助手。仔细阅读资料，输出结论，每条一行，格式为：结论内容||来源编号。"
-            "来源编号是该结论依据的资料序号（如 1、2、3）。"
-            "只依据资料、不要编造；如果资料与问题无关，直接输出“无关”" + hint
-        )
+        if strict:
+            system_prompt = (
+                "你是研究助手。仔细阅读资料，输出结论，每条一行，格式为：结论内容||来源编号。"
+                "来源编号是该结论依据的资料序号（如 1、2、3）。"
+                "只依据资料、不要编造；如果资料与问题主题完全无关，直接输出“无关”" + hint
+            )
+            ask = "提炼最多 3 条关键结论（格式：结论||编号）："
+        else:
+            # 放宽：不再允许说"无关"，只要资料里有可用信息就提炼出来
+            system_prompt = (
+                "你是研究助手。资料可能与问题不完全对应，但只要能提取到相关的"
+                "事实、数字、规定或背景，就要提炼出来。输出结论，每条一行，"
+                "格式为：结论内容||来源编号。来源编号是资料序号。" + hint
+            )
+            ask = "尽量提炼最多 3 条与主题相关的事实或结论（格式：结论||编号）："
+
         resp = self.llm.invoke([
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content":
-                f"问题：{question}\n资料：\n{material}\n\n提炼最多 3 条关键结论（格式：结论||编号）："},
+            {"role": "user", "content": f"问题：{question}\n资料：\n{material}\n\n{ask}"},
         ], max_tokens=600)
 
         out = []

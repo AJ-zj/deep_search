@@ -5,7 +5,24 @@
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg)](https://fastapi.tiangolo.com/)
+[![CI](https://github.com/AJ-zj/deep_search/actions/workflows/ci.yml/badge.svg)](https://github.com/AJ-zj/deep_search/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+---
+
+## 效果预览
+
+**旅行规划**：左侧地图（真实坐标 + 打点）、天气预报；右侧逐日行程，每个地点带实景图、地址、附近美食、导航链接。
+
+![旅行规划](assets/screenshot-travel.png)
+
+**政策调研**（深度档）：每条结论都带来源链接，可逐条核对。
+
+![政策调研](assets/screenshot-policy.png)
+
+**入口**：领域可切换、深度可开关。
+
+![首页](assets/screenshot-home.png)
 
 ---
 

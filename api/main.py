@@ -70,7 +70,9 @@ def _worker(req: PlanRequest, q: queue.Queue):
     try:
         s = get_settings()
         llm = LLM(s.llm_model, s.openai_api_key, s.openai_base_url)
-        search = SearchTool(api_key=os.environ.get("TAVILY_API_KEY", ""))
+        # 必须从 config 读 key（它已合并 .env + 环境变量），
+        # 直接读 os.environ 会漏掉写在本项目 .env 里的配置。
+        search = SearchTool(api_key=s.tavily_api_key)
         amap = AmapService(api_key=s.amap_key)
         photos = PhotoService(access_key=s.unsplash_key,
                               cache_dir=_ROOT / "workspace")

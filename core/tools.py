@@ -46,22 +46,15 @@ def clean_fulltext(raw: str, max_chars: int = 6000) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
 
-    # 2) 砍掉开头的导航噪音：找到第一个"像正文"的位置
-    #    启发式：跳过连续短行（菜单项通常很短）和英文导航行
+    # 2) 砍掉开头的导航噪音
+    #    实测网页开头是目录/多语言切换（"English (Global)" 这类短行），
+    #    正文是长段落。策略：找到第一行"足够长"的文本，从那里开始保留。
     lines = text.split("\n")
     start = 0
-    short_streak = 0
-    for i, line in enumerate(lines[:60]):
-        s = line.strip()
-        is_short = len(s) < 12
-        is_nav = bool(re.fullmatch(r"[A-Za-z\s\(\)\-]{3,40}", s)) and not re.search(r"[a-z]{4,}\s+[a-z]{4,}", s)
-        if is_short or is_nav:
-            short_streak += 1
-            if short_streak >= 6:
-                start = i + 1
-                short_streak = 0
-        else:
-            short_streak = 0
+    for i, line in enumerate(lines[:80]):
+        if len(line.strip()) >= 30:      # 长行 ≈ 正文起点
+            start = i
+            break
     body = "\n".join(lines[start:]).strip()
     if len(body) < 200:      # 启发式误伤，回退原文
         body = text

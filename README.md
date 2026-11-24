@@ -130,6 +130,8 @@ for f in pack.findings:
 
 ## 快速开始
 
+> 换设备部署、key 申请、常见问题见 [SETUP.md](SETUP.md)
+
 ```bash
 git clone <this-repo>
 cd TripResearch

@@ -1,6 +1,6 @@
 {
   "_comment": "政策调研评测集。expected 是人工核实的标准答案（以政府公开文件为准）。used_for 标记该主题检验什么能力。",
-  "version": 1,
+  "version": 2,
   "cases": [
     {
       "id": "zj-pv-subsidy",
@@ -43,6 +43,105 @@
         "scope_keywords": ["可再生能源"],
         "must_not_contain": ["江苏", "安徽"]
       }
+    },
+    {
+      "id": "zj-digital-economy",
+      "topic": "浙江省数字经济发展规划政策",
+      "domain": "policy",
+      "used_for": "省级产业规划政策识别",
+      "expected": {
+        "doc_no_contains": [],
+        "issuer_contains": ["浙江"],
+        "subsidy_values": [],
+        "subsidy_must_hit": 0,
+        "scope_keywords": ["数字", "经济"],
+        "must_not_contain": ["江苏", "广东"]
+      }
+    },
+    {
+      "id": "beijing-nev-subsidy",
+      "topic": "北京市新能源汽车购置补贴政策",
+      "domain": "policy",
+      "used_for": "跨地区补贴政策（检验地域串味）",
+      "expected": {
+        "doc_no_contains": [],
+        "issuer_contains": ["北京"],
+        "subsidy_values": [],
+        "subsidy_must_hit": 0,
+        "scope_keywords": ["新能源", "汽车"],
+        "must_not_contain": ["浙江", "上海", "广东"]
+      }
+    },
+    {
+      "id": "shanghai-housing-fund",
+      "topic": "上海市住房公积金提取管理办法",
+      "domain": "policy",
+      "used_for": "民生类政策（非补贴类）",
+      "expected": {
+        "doc_no_contains": [],
+        "issuer_contains": ["上海"],
+        "subsidy_values": [],
+        "subsidy_must_hit": 0,
+        "scope_keywords": ["住房", "公积金"],
+        "must_not_contain": ["北京", "浙江", "江苏"]
+      }
+    },
+    {
+      "id": "gd-smart-manufacturing",
+      "topic": "广东省智能制造发展规划政策文件",
+      "domain": "policy",
+      "used_for": "省级制造业政策识别",
+      "expected": {
+        "doc_no_contains": [],
+        "issuer_contains": ["广东"],
+        "subsidy_values": [],
+        "subsidy_must_hit": 0,
+        "scope_keywords": ["制造", "智能"],
+        "must_not_contain": ["浙江", "江苏", "山东"]
+      }
+    },
+    {
+      "id": "national-carbon-market",
+      "topic": "全国碳排放权交易管理办法",
+      "domain": "policy",
+      "used_for": "全国性法规（检验全国vs地方区分）",
+      "expected": {
+        "doc_no_contains": [],
+        "issuer_contains": ["生态环境部", "国家", "国务院"],
+        "subsidy_values": [],
+        "subsidy_must_hit": 0,
+        "scope_keywords": ["碳排放", "交易"],
+        "must_not_contain": []
+      }
+    },
+    {
+      "id": "js talents-policy",
+      "topic": "江苏省人才引进优惠政策",
+      "domain": "policy",
+      "used_for": "人才政策（非金额类）",
+      "expected": {
+        "doc_no_contains": [],
+        "issuer_contains": ["江苏"],
+        "subsidy_values": [],
+        "subsidy_must_hit": 0,
+        "scope_keywords": ["人才"],
+        "must_not_contain": ["浙江", "广东", "山东"]
+      }
+    },
+    {
+      "id": "fictional-policy",
+      "topic": "2026年火星基地建设补贴政策实施细则",
+      "domain": "policy",
+      "used_for": "反向对照：不存在的新闻应检验是否编造（而非命中答案）",
+      "expected": {
+        "doc_no_contains": [],
+        "issuer_contains": [],
+        "subsidy_values": [],
+        "subsidy_must_hit": 0,
+        "scope_keywords": [],
+        "must_not_contain": []
+      },
+      "is_negative": true
     }
   ],
   "source_quality": {

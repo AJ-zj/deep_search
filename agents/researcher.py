@@ -33,6 +33,7 @@ _USELESS_PATTERNS = re.compile(
     r"网络(搜索|环境)?(不可用|无法|不支持|受限)"
     r"|无法(获取|查询|检索|找到)"
     r"|没有(找到|获取到)相关"
+    r"|无相关结论|未提及.{0,20}相关内容|资料未提及"
     r"|建议联网"
     r"|离线资料"
 )
@@ -94,6 +95,10 @@ class ResearchEngine:
         # ④ 过滤 + 去重（同一结论只保留一条）
         kept = [(c, s, lv) for c, s, lv in all_findings
                 if not keywords or any(k in c for k in keywords)]
+        # 回退仅在"有发现但关键词都没命中"时启用（如发现里只有"虎跑泉"不含"杭州"）。
+        # 若 all_findings 本身就为空（虚构主题/全部跑题被预检拦下），绝不回退造内容。
+        if not all_findings:
+            return pack
         if len(kept) < 2:
             kept = all_findings
         seen = set()
@@ -123,6 +128,23 @@ class ResearchEngine:
         results = self.search.search(scoped_q, max_results=5)
         if not results:
             return []
+
+        # 相关性预检：搜索结果的标题/摘要必须至少命中一个主题核心词。
+        # 否则就是搜索跑题（实测问"火星基地补贴"返回了北京家电补贴），
+        # 此时不该提炼——提炼只会把无关政策包装成本题答案（编造）。
+        #
+        # 两个避免误杀真主题的关键：
+        #   1. 用 2-3 字实体词（不是 4 字滑窗），且排除"补贴/建设/政策"等通用词
+        #   2. 在【全部原始结果】上判断，而不是排序截断后的前 3 条
+        #      （实测对前 3 条判断会把"国家分布式光伏"这类真主题误杀）
+        core_kws = self._precheck_keywords(topic, dom) if topic else []
+        if core_kws:
+            def _hit(r):
+                text = (r.get("title", "") or "") + " " + (r.get("snippet", "") or "")
+                return any(k in text for k in core_kws)
+            if not any(_hit(r) for r in results):
+                logger.warning(f"搜索结果与主题无关，跳过（疑似虚构主题）: {topic[:30]}")
+                return []
 
         # 按来源权威性排序：政府/官方优先，低质（营销号/问答站）剔除。
         # 这是政策调研的关键——不能把营销号和红头文件等权处理。
@@ -160,6 +182,63 @@ class ResearchEngine:
             level = hit.get("level", "")
             out.append((claim, source, level))
         return out
+
+    # 通用政策词：这些词在任何政策标题里都可能出现，没有区分度，
+    # 不能用于相关性预检（否则"火星基地补贴"会因"补贴"命中任何补贴政策）。
+    _GENERIC_POLICY_WORDS = {
+        "关于", "有关", "最新", "文件", "政策", "管理", "办法", "规定", "通知",
+        "意见", "细则", "实施", "建设", "发展", "规划", "补贴", "优惠", "扶持",
+        "资金", "专项", "工作", "有关问题", "若干", "暂行办法", "实施细则",
+        "管理暂行办法", "的通知", "的", "和", "及",
+    }
+
+    @staticmethod
+    def _precheck_keywords(topic: str, dom: Domain) -> List[str]:
+        """相关性预检专用：提取 2-3 字"实体词"，排除通用政策词。
+
+        为什么用短实体词而不是长滑窗？
+            实测 4 字滑窗（"广东省智""省智能制"）匹配不上标题
+            "广东智能制造发展规划"，把正当主题误判为跑题。
+            改用 2-3 字实体词（广东/智能/制造），既能命中正当主题，
+            又能让虚构主题（火星/基地）因无实体词命中而被正确拒绝。
+
+        关键：必须排除"补贴/建设/政策"这类通用词，否则虚构主题
+        "火星基地补贴"会因"补贴"命中任何补贴政策，造成编造。
+        """
+        noise = set(dom.stop_words) | ResearchEngine._GENERIC_POLICY_WORDS
+
+        # 先把主题切成候选片段（按标点和常见的"的/及/和"切）
+        segs = re.split(r"[\s\d\-—_（）()《》〕〔\[\]、，,]+", topic)
+        out = []
+        for seg in segs:
+            seg = seg.strip()
+            if not seg or seg in noise:
+                continue
+            # 对每个片段，去掉其中包含的所有通用词，剩下的就是实体
+            cleaned = seg
+            for w in sorted(noise, key=len, reverse=True):
+                cleaned = cleaned.replace(w, " ")
+            for part in cleaned.split():
+                part = part.strip()
+                if len(part) < 2:
+                    continue
+                # 实体词取 2-3 字：地名/领域名通常就这个长度。
+                # 对较长片段取多个 2-3 字窗口（前缀 + 中段 + 尾部），
+                # 确保"分布式光伏"这类中段实体不会被漏掉。
+                if len(part) <= 3:
+                    out.append(part)
+                else:
+                    out.append(part[:3])            # 前缀：国家分/广东省
+                    out.append(part[2:5])           # 中段：分布式/能制造
+                    out.append(part[-3:])           # 尾部：理办法→排除；光伏→保留
+
+        # 去重保序
+        seen, result = set(), []
+        for k in out:
+            if k and k not in noise and k not in seen:
+                seen.add(k)
+                result.append(k)
+        return result[:8]
 
     def _find_gaps(self, topic: str, findings: List[Tuple[str, str, str]],
                    dom: Domain) -> List[str]:

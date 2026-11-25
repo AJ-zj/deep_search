@@ -64,6 +64,24 @@ def evaluate_case(case: dict, llm, search, deep: bool) -> dict:
     # ---- 1. 内容准确率 ----
     checks = []
 
+    # 反向用例：主题本身是虚构的，正确行为是"识别出不存在的政策、不编造细节"
+    is_negative = case.get("is_negative", False)
+    if is_negative:
+        # 判定：不应有具体文号/补贴金额；发现数量应很少或明确表示不存在
+        fabrications = []
+        if card.doc_no:
+            fabrications.append(f"编造文号:{card.doc_no}")
+        if card.subsidy:
+            fabrications.append(f"编造补贴:{card.subsidy[:2]}")
+        # 编造判定：只有"具体的文号/金额"才算编造；
+        # 政策名称照抄用户主题是诚实的，不能算编造（"实施细则"是主题自带词）。
+        honest = not fabrications
+        checks.append(("虚构主题不编造", honest))
+        # 反向用例不参与正向命中检查，直接算出准确率
+        passed = sum(1 for _, ok in checks if ok)
+        accuracy = passed / len(checks)
+        return _assemble(case, elapsed, pack, checks, accuracy, card, corpus)
+
     doc_ok = True
     if exp.get("doc_no_contains"):
         doc_ok = any(k in combined for k in exp["doc_no_contains"])
@@ -94,28 +112,29 @@ def evaluate_case(case: dict, llm, search, deep: bool) -> dict:
     passed = sum(1 for _, ok in checks if ok)
     total = len(checks) or 1
     accuracy = passed / total
+    return _assemble(case, elapsed, pack, checks, accuracy, card, corpus)
 
-    # ---- 2. 来源质量 ----
+
+def _assemble(case, elapsed, pack, checks, accuracy, card, corpus):
+    """汇总评分结果（正向/反向用例共用）。"""
     levels = [f.level for f in pack.findings if f.level]
     s_count = sum(1 for lv in levels if lv == "S")
     a_count = sum(1 for lv in levels if lv == "A")
     d_count = sum(1 for lv in levels if lv == "D")
     auth_ratio = (s_count + a_count) / len(levels) if levels else 0.0
 
-    # ---- 3. 结构化完整度 ----
-    card_filled = card.filled        # /6
-
     return {
         "id": case["id"],
-        "topic": topic,
+        "topic": case["topic"],
         "used_for": case.get("used_for", ""),
+        "is_negative": case.get("is_negative", False),
         "elapsed": round(elapsed, 1),
         "findings": len(pack.findings),
         "checks": checks,
         "accuracy": accuracy,
         "levels": {"S": s_count, "A": a_count, "D": d_count, "total": len(levels)},
         "auth_ratio": auth_ratio,
-        "card_filled": card_filled,
+        "card_filled": card.filled,
         "card": card.to_dict(),
         "findings_detail": [{"claim": f.claim, "source": f.source, "level": f.level}
                             for f in pack.findings],
@@ -136,6 +155,10 @@ def render_report(results: list, deep: bool) -> str:
     avg_card = sum(r["card_filled"] for r in results) / len(results)
     total_d = sum(r["levels"]["D"] for r in results)
 
+    # 反向用例（虚构主题）预期就没有发现，不能算"未取到数据"
+    positive = [r for r in results if not r.get("is_negative")]
+    empty = sum(1 for r in positive if r["findings"] == 0)
+
     lines.append("## 总览\n")
     lines.append("| 指标 | 数值 | 说明 |")
     lines.append("|---|---|---|")
@@ -143,6 +166,7 @@ def render_report(results: list, deep: bool) -> str:
     lines.append(f"| 权威来源占比 | **{avg_auth:.0%}** | S/A 级（政府/权威机构）来源比例 |")
     lines.append(f"| 卡片字段完整度 | **{avg_card:.1f}/6** | 政策结构化抽取填了几个字段 |")
     lines.append(f"| 低质来源条数 | **{total_d}** | 应为 0 |")
+    lines.append(f"| 未取到数据 | **{empty}/{len(results)}** | 搜索/提炼失败，非答错 |")
     lines.append("")
 
     # 逐用例
@@ -151,7 +175,17 @@ def render_report(results: list, deep: bool) -> str:
         lines.append(f"### {r['topic']}")
         lines.append(f"- 用途：{r['used_for']}")
         lines.append(f"- 耗时：{r['elapsed']}s ｜ 发现数：{r['findings']}")
-        lines.append(f"- 内容准确率：**{r['accuracy']:.0%}**")
+        acc_line = f"- 内容准确率：**{r['accuracy']:.0%}**"
+        if r.get("runs", 1) > 1:
+            acc_line += (f"（{r['runs']} 次均值，区间 "
+                         f"{r['accuracy_min']:.0%}~{r['accuracy_max']:.0%}）")
+        lines.append(acc_line)
+        if r.get("is_negative"):
+            ok = all(v for _, v in r["checks"])
+            lines.append("- ✅ 正确拒绝：虚构主题未编造文号/金额" if ok
+                         else "- ❌ 失败：对虚构主题编造了具体细节")
+        elif r["findings"] == 0:
+            lines.append("- ⚠️ 本轮未取到任何发现（搜索/提炼失败，不计入能力评价）")
         lv = r["levels"]
         lines.append(f"- 来源分布：S {lv['S']} / A {lv['A']} / D {lv['D']}（共 {lv['total']}）")
         lines.append(f"- 卡片字段：{r['card_filled']}/6")
@@ -176,10 +210,11 @@ def render_report(results: list, deep: bool) -> str:
 
     # 局限性（诚实说明）
     lines.append("## 已知局限\n")
-    lines.append("- 评测集只有 3 个主题，样本量小，只能反映趋势不能作为严格统计")
+    lines.append("- 单次运行有波动（搜索结果每次不同）。建议用 `--repeat 3` 取均值再下结论")
     lines.append("- 标准答案基于政府公开文件人工核对，但政策有地区/时间差异")
     lines.append("- 关键词命中是简化判定，不理解语义等价表达")
     lines.append("- 未评估：结论的完整性（漏掉重要信息不扣分）")
+    lines.append("- 「未取到数据」的用例通常是搜索/LLM 瞬时失败，不代表能力差，但也不该算通过")
     return "\n".join(lines)
 
 
@@ -188,6 +223,8 @@ def main():
     ap.add_argument("--deep", action="store_true", help="使用深度档评测")
     ap.add_argument("--out", default="", help="输出 Markdown 报告路径")
     ap.add_argument("--only", default="", help="只跑指定 id")
+    ap.add_argument("--repeat", type=int, default=1,
+                    help="每个用例重复跑几次（用于观察稳定性，默认 1）")
     args = ap.parse_args()
 
     s = get_settings()
@@ -205,18 +242,41 @@ def main():
     if args.only:
         cases = [c for c in cases if c["id"] == args.only]
 
-    print(f"开始评测：{len(cases)} 个用例，模式={'深度' if args.deep else '快速'}\n")
+    repeat = max(1, args.repeat)
+    print(f"开始评测：{len(cases)} 个用例 × {repeat} 次，"
+          f"模式={'深度' if args.deep else '快速'}\n")
+
     results = []
     for i, case in enumerate(cases, 1):
         print(f"[{i}/{len(cases)}] {case['topic']}")
-        try:
-            r = evaluate_case(case, llm, search, args.deep)
-            results.append(r)
-            print(f"    准确率 {r['accuracy']:.0%} | "
-                  f"权威来源 {r['auth_ratio']:.0%} | "
-                  f"卡片 {r['card_filled']}/6 | {r['elapsed']}s")
-        except Exception as e:
-            print(f"    ❌ 失败: {type(e).__name__}: {e}")
+        runs = []
+        for k in range(repeat):
+            try:
+                r = evaluate_case(case, llm, search, args.deep)
+                runs.append(r)
+                tag = f" (第{k+1}次)" if repeat > 1 else ""
+                print(f"    准确率 {r['accuracy']:.0%} | "
+                      f"权威来源 {r['auth_ratio']:.0%} | "
+                      f"卡片 {r['card_filled']}/6 | 发现 {r['findings']} | "
+                      f"{r['elapsed']}s{tag}")
+            except Exception as e:
+                print(f"    ❌ 失败: {type(e).__name__}: {e}")
+
+        if not runs:
+            continue
+        # 多次运行时，聚合为均值 + 波动区间
+        merged = runs[0]
+        if len(runs) > 1:
+            accs = [x["accuracy"] for x in runs]
+            merged = dict(merged)
+            merged["accuracy"] = sum(accs) / len(accs)
+            merged["accuracy_min"] = min(accs)
+            merged["accuracy_max"] = max(accs)
+            merged["empty_runs"] = sum(1 for x in runs if x["findings"] == 0)
+            merged["runs"] = len(runs)
+            print(f"    → 均值 {merged['accuracy']:.0%} "
+                  f"(区间 {min(accs):.0%}~{max(accs):.0%})")
+        results.append(merged)
 
     if not results:
         print("无有效结果")
@@ -231,10 +291,17 @@ def main():
     avg_acc = sum(r["accuracy"] for r in results) / len(results)
     avg_auth = sum(r["auth_ratio"] for r in results) / len(results)
     total_d = sum(r["levels"]["D"] for r in results)
+    positive = [r for r in results if not r.get("is_negative")]
+    empty = sum(1 for r in positive if r["findings"] == 0)
+    neg = [r for r in results if r.get("is_negative")]
     print("\n" + "=" * 50)
     print(f"内容准确率: {avg_acc:.0%}")
     print(f"权威来源占比: {avg_auth:.0%}")
     print(f"低质来源: {total_d} 条")
+    print(f"未取到数据的用例: {empty}/{len(positive)}")
+    if neg:
+        passed = sum(1 for r in neg if all(v for _, v in r["checks"]))
+        print(f"反向用例（虚构主题防编造）: {passed}/{len(neg)} 通过")
     print("=" * 50)
 
 

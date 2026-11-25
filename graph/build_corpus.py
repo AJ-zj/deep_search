@@ -53,6 +53,29 @@ MIN_CHARS = 600          # 太短的全文没有抽取价值，丢弃
 MIN_AUTHORITY = ("S", "A", "B")   # 只收 B 级以上的来源（政策场景 D 级没意义）
 
 
+def doc_relevant(title: str, body: str, topic: str, min_hits: int = 2) -> int:
+    """文档级相关性判断：返回命中的主题实体词数量（0=完全不沾边）。
+
+    为什么需要它？实测语料混进过高校"2026年高层次人才招聘启事"——
+    它含"补贴/人才"等词通过了搜索，但不是政策文件，被抽出了 14 条
+    垃圾三元组。搜索不可全信，入库前要按主题实体词再过一遍。
+
+    为什么分级使用（写入 min_hits=2，汇总 min_hits=1）？
+        第一版汇总也用 >=2 一刀切，结果误杀真文档：
+        《杭州市数字经济发展"十四五"规划》相对主题"浙江省数字经济发展规划政策"
+        只命中 1 个词（市≠省、规划≠政策），被剔除了——但它恰恰是主题的核心文档。
+        原则：能搜到的文档大多相关，强过滤只用于【入库】；
+        【图汇总】只排除完全无关（0 命中）的，模糊的保留。
+    """
+    from agents.researcher import ResearchEngine
+    from core.domain import get_domain
+    kws = ResearchEngine._precheck_keywords(topic, get_domain("policy"))
+    if not kws:
+        return 99
+    probe = (title or "") + " " + (body or "")[:1000]
+    return sum(1 for k in kws if k in probe)
+
+
 def topic_list():
     """从评测集取主题（保证语料和评测同源，之后好对比）。"""
     eval_set = json.loads((ROOT / "tests" / "eval_set.json").read_text(encoding="utf-8"))
@@ -105,6 +128,10 @@ def build(deep: bool = True, per_topic_max_docs: int = 6):
                     continue
                 body = (r.get("fulltext") or "").strip()
                 if len(body) < MIN_CHARS:
+                    continue
+                # 文档级相关性过滤（入库从严：≥2 个实体词命中）
+                if doc_relevant(r.get("title", ""), body, topic) < 2:
+                    logger.info(f"  过滤非主题文档: {r.get('title','')[:36]}")
                     continue
                 if r["url"] in known_urls:
                     continue

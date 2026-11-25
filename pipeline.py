@@ -71,8 +71,23 @@ class TripResearchPipeline:
             # 政策领域：把发现整理成结构化卡片（文号/主体/补贴/期限）
             self._emit({"type": "stage", "stage": "plan",
                         "message": "正在整理政策要点..."})
+            # GraphRAG 接入点：先查固定语料图谱拿多跳关系链
+            # （纯 RAG 的搜索摘要串不起"条例→依据→试行办法"这类链，
+            #  评测中该信息缺失导致两个用例 50%~100% 波动）
+            # 图谱不存在（用户没跑过 build_corpus/extract）→ 静默回退纯 RAG
+            graph_context = ""
+            try:
+                from graph.graph_query import context_for_question, GRAPH_FILE
+                if GRAPH_FILE.is_file():
+                    graph_context = context_for_question(topic, restrict_topic=topic)
+                    if graph_context:
+                        self._emit({"type": "progress",
+                                    "text": "已注入政策知识图谱上下文（2跳关系链）"})
+            except Exception as e:
+                logger.warning(f"图谱查询失败，回退纯 RAG: {type(e).__name__}: {e}")
+
             from core.policy import build_card
-            card = build_card(pack, llm=self._llm)
+            card = build_card(pack, llm=self._llm, graph_context=graph_context)
             self._emit({"type": "policy_card", "card": card.to_dict(),
                         "message": f"已抽取 {card.filled}/6 个关键字段"})
 

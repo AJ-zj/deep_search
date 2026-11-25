@@ -108,8 +108,16 @@ def render_context(triples: list, max_items: int = 12) -> str:
     return "\n".join(lines)
 
 
-def context_for_question(question: str, graph: dict = None) -> str:
-    """一步到位：问题 → 图上下文（图谱没建/没命中就返回空串）。"""
+def context_for_question(question: str, graph: dict = None,
+                         restrict_topic: str = "") -> str:
+    """一步到位：问题 → 图上下文（图谱没建/没命中就返回空串）。
+
+    restrict_topic（跨主题污染防护）：
+        实测把主题"浙江省分布式光伏"注入过 2 跳图上下文后，卡片抽到了
+        国家 761 号文（"分布式光伏"是全国同名词，顺着关系链流进了省级主题）。
+        对策：三元组带 docs 溯源，只保留【来源文档属于该主题】的关系。
+        图谱的价值在多跳链，但跨司法辖区/跨主题的链不能乱串。
+    """
     if graph is None:
         if not GRAPH_FILE.is_file():
             return ""
@@ -118,9 +126,41 @@ def context_for_question(question: str, graph: dict = None) -> str:
     if not seeds:
         return ""
     trs = neighborhood(seeds, graph, hops=2)
+    if restrict_topic:
+        trs = _filter_by_topic(trs, restrict_topic)
     if not trs:
         return ""
     return render_context(trs)
+
+
+def _doc_topic_map() -> dict:
+    """doc_id -> topic 反查表（来自 corpus/manifest.json 的 topics 映射）。"""
+    manifest = ROOT / "graph" / "corpus" / "manifest.json"
+    if not manifest.is_file():
+        return {}
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    mapping = {}
+    for topic, files in (data.get("topics") or {}).items():
+        for d in data.get("docs", []):
+            if d.get("file") in files:
+                mapping[d["id"]] = topic
+    return mapping
+
+
+def _filter_by_topic(triples: list, topic: str, tmap: dict = None) -> list:
+    """只保留来源文档归属该主题的三元组（无溯源信息时保守保留）。
+
+    tmap 可注入（便于离线单测）；默认从 manifest 读取。
+    """
+    if tmap is None:
+        tmap = _doc_topic_map()
+    if not tmap:
+        return triples
+    kept = [tr for tr in triples
+            if any(tmap.get(doc) == topic for doc in tr.get("docs", []))
+            or not tr.get("docs")]
+    # 主题内关系少也照用（宁少而准）：回退全集会把跨主题污染放回来
+    return kept
 
 
 def main():

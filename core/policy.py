@@ -193,23 +193,34 @@ def extract_regex(pack: KnowledgePack) -> PolicyCard:
 
 
 def enrich_with_llm(card: PolicyCard, pack: KnowledgePack, llm,
-                    max_findings: int = 12) -> PolicyCard:
+                    max_findings: int = 12, graph_context: str = "") -> PolicyCard:
     """用 LLM 补齐语义字段（政策名称/适用对象），并修整格式。
 
     严格约束：只允许使用给定发现里出现的信息，抽不到就留空。
+
+    graph_context（GraphRAG 接入点）：
+        来自固定语料图谱的 2 跳关系链。政策演化/依据链这类【多跳事实】
+        正是纯 RAG 的短板（评测里国家光伏、全国碳排用例波动的原因）。
+        采信规则：图谱来自精读全文的结构化抽取，比搜索摘要片段更可信，
+        字段冲突时【图谱优先】。
     """
-    if llm is None or not pack.findings:
+    if llm is None or (not pack.findings and not graph_context):
         return card
 
     findings_text = "\n".join(
         f"[{i}] {f.claim}（{f.level}级来源）" for i, f in enumerate(pack.findings[:max_findings], 1)
     )
+    graph_block = f"\n\n{graph_context}\n" if graph_context else ""
+    graph_rule = (
+        "\n4. 若提供了【政策知识图谱】，它与发现冲突时以图谱为准"
+        "（图谱来自全文精读，比搜索片段可信）\n" if graph_context else ""
+    )
     prompt = (
-        f"以下是关于政策的研究发现：\n\n{findings_text}\n\n"
+        f"以下是关于政策的研究发现：\n\n{findings_text}{graph_block}\n\n"
         "请把信息整理成结构化 JSON。严格要求：\n"
-        "1. 只能使用上述发现中出现的信息，绝对不要补充常识或推断\n"
+        "1. 只能使用上述发现或图谱中出现的信息，绝对不要补充常识或推断\n"
         "2. 抽不到的字段填空字符串或空数组，不要写“未提及”“暂无”\n"
-        "3. 只输出 JSON，不要解释\n\n"
+        "3. 只输出 JSON，不要解释" + graph_rule + "\n"
         "格式：\n"
         '{"title":"政策名称","doc_no":"文号","issuer":"发布主体",'
         '"subsidy":["补贴标准，原文保留数字"],"scope":"适用对象/范围",'
@@ -303,8 +314,8 @@ def _parse_json(text: str) -> Optional[dict]:
     return None
 
 
-def build_card(pack: KnowledgePack, llm=None) -> PolicyCard:
-    """构建政策卡片：正则先抽（准），LLM 补（全）。"""
+def build_card(pack: KnowledgePack, llm=None, graph_context: str = "") -> PolicyCard:
+    """构建政策卡片：正则先抽（准），LLM 补（全），可选图谱上下文（多跳）。"""
     card = extract_regex(pack)
-    card = enrich_with_llm(card, pack, llm)
+    card = enrich_with_llm(card, pack, llm, graph_context=graph_context)
     return card

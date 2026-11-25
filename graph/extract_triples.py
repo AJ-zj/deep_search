@@ -143,9 +143,32 @@ def main():
 
     EXTRACTED.write_text(json.dumps(done, ensure_ascii=False), encoding="utf-8")
 
-    # 汇总合并成图
-    all_triples, seen = [], set()
+    # 汇总合并成图（先过文档级相关性过滤：招聘启事等伪政策文档的三元组不进图）
+    from graph.build_corpus import doc_relevant
+    doc_meta = {d["id"]: d for d in docs}
+    all_triples, seen, dropped_docs = [], set(), []
     for doc_id, triples in done.items():
+        meta = doc_meta.get(doc_id, {})
+        path = DOCS_DIR / meta.get("file", "")
+        topic = title = raw = ""
+        if path.is_file():
+            raw = path.read_text(encoding="utf-8")
+            # front-matter: topic/title 在文件头
+            fm = raw.split("---", 2)
+            if len(fm) >= 3:
+                for line in fm[1].splitlines():
+                    if line.startswith("topic:"):
+                        topic = line.split(":", 1)[1].strip()
+                    elif line.startswith("title:"):
+                        title = line.split(":", 1)[1].strip()
+        if topic and doc_relevant(title or meta.get("title", ""),
+                                   raw.split('---', 2)[-1] if raw.startswith("---") else raw,
+                                   topic, min_hits=1) < 1:
+            # 图汇总只排除【完全无关】(0命中)的伪政策文档；
+            # 1 个命中的模糊文档保留（实测"市规划"相对"省规划政策"主题只命中1词，
+            # 若按≥2一刀切会误杀核心文档）
+            dropped_docs.append(f"{doc_id}({title[:20]})")
+            continue
         for h, r, t in triples:
             key = (h, r, t)
             if key not in seen:
@@ -157,6 +180,9 @@ def main():
                         if doc_id not in item["docs"]:
                             item["docs"].append(doc_id)
                         break
+
+    if dropped_docs:
+        logger.info(f"相关性过滤剔除 {len(dropped_docs)} 篇文档的三元组: {dropped_docs[:8]}")
 
     entities = set()
     for tr in all_triples:

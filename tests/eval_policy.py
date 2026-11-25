@@ -57,7 +57,15 @@ def evaluate_case(case: dict, llm, search, deep: bool) -> dict:
 
     # 把全部发现拼成一段文本，用于关键词命中检查
     corpus = "\n".join(f.claim for f in pack.findings)
-    card = build_card(pack, llm=llm)
+    # 与生产链路一致：图谱存在就注入（否则 GraphRAG 改进测不出来）
+    graph_context = ""
+    try:
+        from graph.graph_query import context_for_question, GRAPH_FILE
+        if GRAPH_FILE.is_file():
+            graph_context = context_for_question(topic, restrict_topic=topic)
+    except Exception:
+        pass
+    card = build_card(pack, llm=llm, graph_context=graph_context)
     card_text = json.dumps(card.to_dict(), ensure_ascii=False)
     combined = corpus + "\n" + card_text
 
@@ -80,7 +88,7 @@ def evaluate_case(case: dict, llm, search, deep: bool) -> dict:
         # 反向用例不参与正向命中检查，直接算出准确率
         passed = sum(1 for _, ok in checks if ok)
         accuracy = passed / len(checks)
-        return _assemble(case, elapsed, pack, checks, accuracy, card, corpus)
+        return _assemble(case, elapsed, pack, checks, accuracy, card, corpus, graph_context)
 
     doc_ok = True
     if exp.get("doc_no_contains"):
@@ -112,10 +120,10 @@ def evaluate_case(case: dict, llm, search, deep: bool) -> dict:
     passed = sum(1 for _, ok in checks if ok)
     total = len(checks) or 1
     accuracy = passed / total
-    return _assemble(case, elapsed, pack, checks, accuracy, card, corpus)
+    return _assemble(case, elapsed, pack, checks, accuracy, card, corpus, graph_context)
 
 
-def _assemble(case, elapsed, pack, checks, accuracy, card, corpus):
+def _assemble(case, elapsed, pack, checks, accuracy, card, corpus, graph_context=""):
     """汇总评分结果（正向/反向用例共用）。"""
     levels = [f.level for f in pack.findings if f.level]
     s_count = sum(1 for lv in levels if lv == "S")
@@ -128,6 +136,7 @@ def _assemble(case, elapsed, pack, checks, accuracy, card, corpus):
         "topic": case["topic"],
         "used_for": case.get("used_for", ""),
         "is_negative": case.get("is_negative", False),
+        "used_graph": bool(graph_context),
         "elapsed": round(elapsed, 1),
         "findings": len(pack.findings),
         "checks": checks,

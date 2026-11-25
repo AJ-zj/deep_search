@@ -176,6 +176,20 @@ def test_graph_query():
     seeds2 = find_entities("火星基地的补贴是多少", g)
     check("无关问题不误命中", all("火星" not in s for s in seeds2), str(seeds2))
 
+    # 跨主题污染防护（实测浙江主题曾被图注入国家761号文）
+    from graph.graph_query import _filter_by_topic
+    tmap = {"001": "浙江省分布式光伏发电补贴政策",
+            "002": "国家分布式光伏发电补贴政策文件"}
+    trs = [
+        {"h": "浙政发〔2013〕49号", "r": "规定", "t": "省补0.1元/千瓦时", "docs": ["001"]},
+        {"h": "发改价格〔2019〕761号", "r": "规定", "t": "补贴0.10元", "docs": ["002"]},
+    ]
+    kept = _filter_by_topic(trs, "浙江省分布式光伏发电补贴政策", tmap=tmap)
+    check("跨主题三元组被过滤", len(kept) == 1 and kept[0]["h"].startswith("浙政发"),
+          str(kept))
+    kept2 = _filter_by_topic(trs, "国家分布式光伏发电补贴政策文件", tmap=tmap)
+    check("本主题三元组保留", len(kept2) == 1 and "761" in kept2[0]["h"])
+
 
 def test_topic_keywords():
     print("[researcher 关键词提取]")

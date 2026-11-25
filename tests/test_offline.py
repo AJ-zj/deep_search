@@ -134,6 +134,49 @@ def test_useless_filter():
         check(f"应保留 {s[:16]!r}", not _USELESS_PATTERNS.search(s))
 
 
+def test_graph_query():
+    print("[graph_query 图遍历]")
+    from collections import defaultdict
+    from graph.graph_query import split_terms, find_entities, neighborhood, render_context
+
+    # 手工小图：模拟政策演化链
+    triples = [
+        {"h": "国能发〔2013〕390号", "r": "规定", "t": "补贴0.42元/千瓦时", "docs": ["001"]},
+        {"h": "国能发〔2013〕390号", "r": "发布主体", "t": "国家能源局", "docs": ["001"]},
+        {"h": "浙政发〔2013〕49号", "r": "依据", "t": "国能发〔2013〕390号", "docs": ["002"]},
+        {"h": "浙政发〔2013〕49号", "r": "规定", "t": "省补0.1元/千瓦时", "docs": ["002"]},
+        {"h": "发改能源〔2019〕761号", "r": "修订", "t": "国能发〔2013〕390号", "docs": ["003"]},
+    ]
+    adj = defaultdict(list)
+    entities = set()
+    for tr in triples:
+        h, r, t = tr["h"], tr["r"], tr["t"]
+        entities.add(h); entities.add(t)
+        adj[h].append((r, t, tr))
+        adj[t].append(("←" + r, h, tr))
+    g = {"triples": triples, "adj": adj, "entities": entities}
+
+    terms = split_terms("浙政发〔2013〕49号规定了什么")
+    check("文号被切出", any("2013" in t or "〔" in t or len(t) >= 4 for t in terms))
+
+    seeds = find_entities("浙政发〔2013〕49号规定了什么", g)
+    check("种子实体正确", seeds and "浙政发〔2013〕49号" in seeds, str(seeds))
+
+    trs = neighborhood(seeds, g, hops=2)
+    rels = {(t["h"], t["r"], t["t"]) for t in trs}
+    check("1跳命中直接规定", ("浙政发〔2013〕49号", "规定", "省补0.1元/千瓦时") in rels)
+    check("2跳沿依据链走通", ("国能发〔2013〕390号", "规定", "补贴0.42元/千瓦时") in rels,
+          str(rels))
+    check("2跳发现修订关系", ("发改能源〔2019〕761号", "修订", "国能发〔2013〕390号") in rels)
+
+    ctx = render_context(trs)
+    check("上下文含图谱标注", "政策知识图谱" in ctx)
+    check("上下文含关系箭头", "->" in ctx or "-[" in ctx)
+
+    seeds2 = find_entities("火星基地的补贴是多少", g)
+    check("无关问题不误命中", all("火星" not in s for s in seeds2), str(seeds2))
+
+
 def test_topic_keywords():
     print("[researcher 关键词提取]")
     eng = ResearchEngine(llm=None, search=None)
@@ -154,6 +197,7 @@ def main():
     test_json_parse()
     test_useless_filter()
     test_topic_keywords()
+    test_graph_query()
 
     print()
     if failures:

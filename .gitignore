@@ -19,3 +19,8 @@ eval_report_*.md
 .vscode/
 .idea/
 .DS_Store
+
+# mini-GraphRAG 生成物（抓取语料有版权、图数据可重建，均不入库）
+graph/corpus/
+graph/extracted.json
+graph/graph.json
